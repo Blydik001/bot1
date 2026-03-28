@@ -1,7 +1,11 @@
 import os
 import logging
+import asyncio
+import aiohttp  # для асинхронных HTTP-запросов
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
+
+# Установка библиотеки aiohttp (если не установлена): pip install aiohttp
 
 logging.basicConfig(
     level=logging.INFO,
@@ -22,6 +26,15 @@ ROLES_LIST = [
 
 def get_user_role(user_id: int) -> str:
     return "Куратор тех. специалистов"
+
+# Функция для получения информации по IP через API
+async def get_ip_info(ip: str) -> dict:
+    async with aiohttp.ClientSession() as session:
+        async with session.get(f'https://ipapi.co/{ip}/json/') as response:
+            if response.status == 200:
+                return await response.json()
+            else:
+                return {"error": "Не удалось получить информацию по IP"}
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_first_name = update.effective_user.first_name
@@ -64,15 +77,39 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await query.answer()
     action = query.data
     user = query.from_user.first_name
-    actions = {
-        "create_forms": "Функция «Создание форм» активирована.",
-        "ip_analytics": "Аналитика IP запущена.",
-        "logs": "Вы просматриваете логи.",
-        "settings": "Вы вошли в настройки."
-    }
-    response_text = actions.get(action, "Неизвестное действие.")
-    await query.edit_message_text(response_text)
+    if action == "ip_analytics":
+        await query.edit_message_text("Пожалуйста, введите IP-адрес для анализа (например, 8.8.8.8)")
+        # Регистрируем хендлер для ввода IP
+        context.application.add_handler(MessageHandler(filters.RegexPattern(r'\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b'), ip_analysis))
+    else:
+        actions = {
+            "create_forms": "Функция «Создание форм» активирована.",
+            "logs": "Вы просматриваете логи.",
+            "settings": "Вы вошли в настройки."
+        }
+        response_text = actions.get(action, "Неизвестное действие.")
+        await query.edit_message_text(response_text)
     logger.info(f"Пользователь {user} нажал кнопку: {action}")
+
+async def ip_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    ip = update.message.text
+    ip_info = await get_ip_info(ip)
+    if "error" in ip_info:
+        await update.message.reply_text(f"Ошибка: {ip_info['error']}")
+    else:
+        response_text = (
+            f"Информация по IP-адресу {ip}:\n"
+            f"Страна: {ip_info.get('country_name', 'Неизвестно')}\n"
+            f"Регион: {ip_info.get('region', 'Неизвестно')}\n"
+            f"Город: {ip_info.get('city', 'Неизвестно')}\n"
+            f"Широта: {ip_info.get('latitude', 'Неизвестно')}\n"
+            f"Долгота: {ip_info.get('longitude', 'Неизвестно')}\n"
+            f"ISP: {ip_info.get('org', 'Неизвестно')}\n"
+            f"Часовой пояс: {ip_info.get('timezone', 'Неизвестно')}"
+        )
+        await update.message.reply_text(response_text)
+    # Удаляем хендлер после использования
+    context.application.remove_handler(MessageHandler(filters.RegexPattern(r'\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b'), ip_analysis))
 
 async def unknown(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text("Неизвестная команда. Введите /help для списка команд.")
