@@ -1,7 +1,7 @@
 import os
 import logging
 import asyncio
-import aiohttp  # для асинхронных HTTP-запросов
+import aiohttp
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
 
@@ -35,6 +35,46 @@ async def get_ip_info(ip: str) -> dict:
                 return await response.json()
             else:
                 return {"error": "Не удалось получить информацию по IP"}
+
+# Обработка ввода для создания форм одним списком
+async def collect_form_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    step = context.user_data.get('step')
+
+    if step == 'command':
+        # Сохраняем команду и переходим к запросу причины
+        context.user_data['command'] = text
+        await update.message.reply_text("Введите причину блокировки, к примеру «2.28 Покупка ИВ».")
+        context.user_data['step'] = 'reason'
+
+    elif step == 'reason':
+        # Сохраняем причину и переходим к запросу списка ников
+        context.user_data['reason'] = text
+        await update.message.reply_text("Введите список ников (через пробел или запятую).")
+        context.user_data['step'] = 'nicks'
+
+    elif step == 'nicks':
+        # Сохраняем список ников и формируем итоговую форму
+        context.user_data['nicks'] = text.split()  # разбиваем строку на список
+
+        # Формируем список команд
+        commands_list = []
+        for nick in context.user_data['nicks']:
+            cmd = f"{context.user_data['command']} {nick} {context.user_data['reason']}"
+            commands_list.append(cmd)
+
+        # Отправляем результат
+        result_text = "Список форм сформирован:\n"
+        for i, cmd in enumerate(commands_list, 1):
+            result_text += f"{i}. {cmd}\n"
+
+        result_text += "\nВы можете отправить список ников для продолжения создания форм, вернуться к настройке форм или же возвратиться в меню."
+
+        await update.message.reply_text(result_text)
+
+        # Очищаем user_data и удаляем хендлер
+        context.user_data.clear()
+        context.application.remove_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, collect_form_data))
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_first_name = update.effective_user.first_name
@@ -76,20 +116,36 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     query = update.callback_query
     await query.answer()
     action = query.data
-    user = query.from_user.first_name
-    if action == "ip_analytics":
+
+    if action == "create_forms":
+        keyboard = [
+            [InlineKeyboardButton("Одним списком", callback_data="form_single_list")],
+            [InlineKeyboardButton("Отдельными сообщениями", callback_data="form_separate_msgs")],
+            [InlineKeyboardButton("Моно-формы", callback_data="form_mono")],
+            [InlineKeyboardButton("Вернуться в панель", callback_data="back_to_panel")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text("Выберите способ создания форм:", reply_markup=reply_markup)
+
+    elif action == "form_single_list":
+        await query.edit_message_text("Введите команду, к примеру `/permban`.")
+        context.user_data['step'] = 'command'
+        context.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, collect_form_data))
+
+    elif action == "ip_analytics":
         await query.edit_message_text("Пожалуйста, введите IP-адрес для анализа (например, 8.8.8.8)")
-        # Регистрируем хендлер для ввода IP
         context.application.add_handler(MessageHandler(filters.RegexPattern(r'\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b'), ip_analysis))
+
     else:
         actions = {
-            "create_forms": "Функция «Создание форм» активирована.",
             "logs": "Вы просматриваете логи.",
-            "settings": "Вы вошли в настройки."
+            "settings": "Вы вошли в настройки.",
+            "form_separate_msgs": "Функция «Отдельными сообщениями» активирована.",
+            "form_mono": "Функция «Моно-формы» активирована.",
+            "back_to_panel": "Возвращаемся в панель управления..."
         }
         response_text = actions.get(action, "Неизвестное действие.")
         await query.edit_message_text(response_text)
-    logger.info(f"Пользователь {user} нажал кнопку: {action}")
 
 async def ip_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ip = update.message.text
@@ -103,30 +159,4 @@ async def ip_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Регион: {ip_info.get('region', 'Неизвестно')}\n"
             f"Город: {ip_info.get('city', 'Неизвестно')}\n"
             f"Широта: {ip_info.get('latitude', 'Неизвестно')}\n"
-            f"Долгота: {ip_info.get('longitude', 'Неизвестно')}\n"
-            f"ISP: {ip_info.get('org', 'Неизвестно')}\n"
-            f"Часовой пояс: {ip_info.get('timezone', 'Неизвестно')}"
-        )
-        await update.message.reply_text(response_text)
-    # Удаляем хендлер после использования
-    context.application.remove_handler(MessageHandler(filters.RegexPattern(r'\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b'), ip_analysis))
-
-async def unknown(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text("Неизвестная команда. Введите /help для списка команд.")
-
-async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    logger.error(f"Exception while handling an update: {context.error}", exc_info=context.error)
-
-def main() -> None:
-    application = Application.builder().token(BOT_TOKEN).build()
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("panel", panel))
-    application.add_handler(CallbackQueryHandler(button_handler))
-    application.add_handler(MessageHandler(filters.COMMAND, unknown))
-    application.add_error_handler(error_handler)
-    logger.info("Бот успешно запущен и начал опрос обновлений...")
-    application.run_polling()
-
-if __name__ == '__main__':
-    main()
+            f"Долгота: {ip_info.get('
